@@ -5,7 +5,7 @@
 #include <DHT.h>
 #include <HardwareSerial.h>
 #include <HTTPClient.h>
-#include <WiFiManager.h>  // ใช้ WiFiManager
+#include <WiFiManager.h>
 
 // === Blynk Credentials ===
 const char auth[] = "-CQhIoPCwlCm5BlSWvVLwzbVjqFL9wfi";
@@ -15,7 +15,7 @@ const char* botToken = "7250539393:AAEARzzl7zhyEdJ7UCqRuXogHEL6hd2r2PA";
 const char* chatID = "-4660899726";
 
 // === Alert Thresholds ===
-float tempThreshold = 30.0;
+float tempThreshold = 40.0;
 float humidityThreshold = 60.0;
 int pm25Threshold = 50;
 
@@ -30,21 +30,20 @@ HardwareSerial pmsSerial(2);
 BlynkTimer timer;
 WiFiClientSecure client;
 HTTPClient http;
-WiFiManager wifiManager;  // สร้าง instance ของ WiFiManager
-uint8_t pmsData[32];
+WiFiManager wifiManager;
 
 void setup() {
     Serial.begin(115200);
     dht.begin();
     pmsSerial.begin(9600, SERIAL_8N1, PMS_RX, PMS_TX);
     
-    wifiManager.autoConnect("ESP32-Setup");  // สร้าง AP ถ้าไม่มี Wi-Fi ที่บันทึกไว้
+    wifiManager.autoConnect("ESP32-Setup");
     Serial.println("✅ Wi-Fi Connected!");
 
     Blynk.begin(auth, WiFi.SSID().c_str(), WiFi.psk().c_str(), "elec.cmtc.ac.th", 8080);
     Serial.println("✅ Blynk Connected!");
 
-    timer.setInterval(10000L, readSensors);
+    timer.setInterval(2000L, readSensors);
 }
 
 void loop() {
@@ -72,7 +71,7 @@ void readSensors() {
         Blynk.virtualWrite(V3, pm2_5);
 
         if (temperature > tempThreshold) sendTelegramMessage("🔥 Temp high: " + String(temperature) + "°C");
-        if (humidity < humidityThreshold) sendTelegramMessage("💧 Humidity low: " + String(humidity) + "%");
+        if (humidity > humidityThreshold) sendTelegramMessage("💧 Humidity high: " + String(humidity) + "%");
         if (pm2_5 > pm25Threshold) sendTelegramMessage("⚠️ PM2.5 High: " + String(pm2_5) + " µg/m³");
     } else {
         Serial.println("❌ Sensor Read Error!");
@@ -80,21 +79,39 @@ void readSensors() {
 }
 
 int readPM25() {
-    while (pmsSerial.available()) pmsSerial.read(); // ล้างบัฟเฟอร์
-    delay(50); // ลดเวลารอให้เร็วขึ้น
+    Serial.println("📡 Reading PM2.5 data...");
+    while (pmsSerial.available()) pmsSerial.read();
+    delay(300);
 
     if (pmsSerial.available() >= 32) {
-        if (pmsSerial.read() == 0x42 && pmsSerial.read() == 0x4D) {
-            pmsSerial.readBytes(&pmsData[2], 30);
-            uint16_t checksum = (pmsData[30] << 8) | pmsData[31];
-            uint16_t sum = 0;
-            for (int i = 0; i < 30; i++) sum += pmsData[i];
+        uint8_t buffer[32];
+        pmsSerial.readBytes(buffer, 32);
 
-            if (sum == checksum) return (pmsData[12] << 8) | pmsData[13];
+        Serial.print("🔍 Raw Data: ");
+        for (int i = 0; i < 32; i++) {
+            Serial.printf("%02X ", buffer[i]);
         }
+        Serial.println();
+
+        if (buffer[0] == 0x42 && buffer[1] == 0x4D) {
+            uint16_t checksum = (buffer[30] << 8) | buffer[31];
+            uint16_t sum = 0;
+            for (int i = 0; i < 30; i++) sum += buffer[i];
+
+            if (sum == checksum) {
+                int pm25 = (buffer[12] << 8) | buffer[13];
+                Serial.printf("✅ PM2.5 Value: %d µg/m³\n", pm25);
+                return pm25;
+            } else {
+                Serial.println("❌ PM2.5 Checksum Error!");
+            }
+        } else {
+            Serial.println("❌ PM2.5 Header Error!");
+        }
+    } else {
+        Serial.println("⚠️ Not enough PM2.5 data available!");
     }
-    Serial.println("❌ PM2.5 Read Error!");
-    return -1;
+    return 0;
 }
 
 void sendTelegramMessage(String message) {
