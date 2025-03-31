@@ -1,0 +1,135 @@
+#include <Wire.h>
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <BlynkSimpleEsp32.h>
+#include <DHT.h>
+#include <HardwareSerial.h>
+#include <HTTPClient.h>
+#include <WiFiManager.h>  // ใช้ WiFiManager
+
+// === Blynk Credentials ===
+const char auth[] = "-CQhIoPCwlCm5BlSWvVLwzbVjqFL9wfi";
+
+// === Telegram Bot Credentials ===
+const char* botToken = "7250539393:AAEARzzl7zhyEdJ7UCqRuXogHEL6hd2r2PA";
+const char* chatID = "-4660899726";
+
+// === Alert Thresholds ===
+float tempThreshold = 30.0;
+float humidityThreshold = 60.0;
+int pm25Threshold = 50;
+
+// === GPIO Configuration ===
+#define DHTPIN       15
+#define DHTTYPE      DHT22
+#define PMS_RX       16
+#define PMS_TX       17
+
+DHT dht(DHTPIN, DHTTYPE);
+HardwareSerial pmsSerial(2);
+BlynkTimer timer;
+WiFiClientSecure client;
+HTTPClient http;
+WiFiManager wifiManager;  // สร้าง instance ของ WiFiManager
+uint8_t pmsData[32];
+
+void setup() {
+    Serial.begin(115200);
+    dht.begin();
+    pmsSerial.begin(9600, SERIAL_8N1, PMS_RX, PMS_TX);
+    
+    wifiManager.autoConnect("ESP32-Setup");  // สร้าง AP ถ้าไม่มี Wi-Fi ที่บันทึกไว้
+    Serial.println("✅ Wi-Fi Connected!");
+
+    Blynk.begin(auth, WiFi.SSID().c_str(), WiFi.psk().c_str(), "elec.cmtc.ac.th", 8080);
+    Serial.println("✅ Blynk Connected!");
+
+    timer.setInterval(10000L, readSensors);
+}
+
+void loop() {
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("⚠️ Wi-Fi Disconnected! Reconnecting...");
+        wifiManager.autoConnect("ESP32-Setup");
+    }
+    if (!Blynk.connected()) {
+        Serial.println("⚠️ Reconnecting to Blynk...");
+        Blynk.begin(auth, WiFi.SSID().c_str(), WiFi.psk().c_str(), "elec.cmtc.ac.th", 8080);
+    }
+    Blynk.run();
+    timer.run();
+}
+
+void readSensors() {
+    float temperature = dht.readTemperature();
+    float humidity = dht.readHumidity();
+    int pm2_5 = readPM25();
+
+    if (!isnan(temperature) && !isnan(humidity)) {
+        Serial.printf("🌡 Temp: %.2f°C | 💧 Humidity: %.2f%% | 🫧 PM2.5: %d µg/m³\n", temperature, humidity, pm2_5);
+        Blynk.virtualWrite(V1, temperature);
+        Blynk.virtualWrite(V2, humidity);
+        Blynk.virtualWrite(V3, pm2_5);
+
+        if (temperature > tempThreshold) sendTelegramMessage("🔥 Temp high: " + String(temperature) + "°C");
+        if (humidity < humidityThreshold) sendTelegramMessage("💧 Humidity low: " + String(humidity) + "%");
+        if (pm2_5 > pm25Threshold) sendTelegramMessage("⚠️ PM2.5 High: " + String(pm2_5) + " µg/m³");
+    } else {
+        Serial.println("❌ Sensor Read Error!");
+    }
+}
+
+int readPM25() {
+    while (pmsSerial.available()) pmsSerial.read(); // ล้างบัฟเฟอร์
+    delay(50); // ลดเวลารอให้เร็วขึ้น
+
+    if (pmsSerial.available() >= 32) {
+        if (pmsSerial.read() == 0x42 && pmsSerial.read() == 0x4D) {
+            pmsSerial.readBytes(&pmsData[2], 30);
+            uint16_t checksum = (pmsData[30] << 8) | pmsData[31];
+            uint16_t sum = 0;
+            for (int i = 0; i < 30; i++) sum += pmsData[i];
+
+            if (sum == checksum) return (pmsData[12] << 8) | pmsData[13];
+        }
+    }
+    Serial.println("❌ PM2.5 Read Error!");
+    return -1;
+}
+
+void sendTelegramMessage(String message) {
+    client.setInsecure();
+    String url = "https://api.telegram.org/bot" + String(botToken) + "/sendMessage?chat_id=" + String(chatID) + "&text=" + urlencode(message);
+    http.begin(client, url);
+    int httpResponseCode = http.GET();
+    
+    Serial.print("📡 Telegram Response Code: ");
+    Serial.println(httpResponseCode);
+    
+    if (httpResponseCode > 0) {
+        Serial.println("✅ Message sent to Telegram successfully!");
+    } else {
+        Serial.println("❌ Failed to send message to Telegram!");
+    }
+    http.end();
+}
+
+String urlencode(String str) {
+    String encodedString = "";
+    char c;
+    for (int i = 0; i < str.length(); i++) {
+        c = str.charAt(i);
+        if (isalnum(c)) {
+            encodedString += c;
+        } else {
+            char code0 = ((c >> 4) & 0xF) + '0';
+            char code1 = (c & 0xF) + '0';
+            if (code0 > '9') code0 += 7;
+            if (code1 > '9') code1 += 7;
+            encodedString += '%';
+            encodedString += code0;
+            encodedString += code1;
+        }
+    }
+    return encodedString;
+}
