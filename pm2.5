@@ -43,7 +43,7 @@ void setup() {
     Blynk.begin(auth, WiFi.SSID().c_str(), WiFi.psk().c_str(), "elec.cmtc.ac.th", 8080);
     Serial.println("✅ Blynk Connected!");
 
-    timer.setInterval(2000L, readSensors);
+    timer.setInterval(10000L, readSensors);
 }
 
 void loop() {
@@ -130,6 +130,10 @@ void sendTelegramMessage(String message) {
     }
     http.end();
 }
+
+BLYNK_WRITE(V4) { tempThreshold = param.asFloat(); }
+BLYNK_WRITE(V5) { humidityThreshold = param.asFloat(); }
+BLYNK_WRITE(V6) { pm25Threshold = param.asInt(); }
 
 String urlencode(String str) {
     String encodedString = "";
